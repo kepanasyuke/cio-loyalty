@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="408" viewBox="0 0 900 408" role="img" aria-labelledby="demoTitle demoDesc">
+  <title id="demoTitle">Демо API CIO Loyalty</title>
+  <desc id="demoDesc">Терминал: вход по коду, покупка пакета баллов, обмен награды и повтор запроса с тем же ключом идемпотентности.</desc>
+  <defs>
+    <style>
+      text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12.5px; }
+      @keyframes reveal {
+        0% { opacity: 0; }
+        1.2% { opacity: 1; }
+        92% { opacity: 1; }
+        95% { opacity: 0; }
+        100% { opacity: 0; }
+      }
+      @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.l1 { animation-delay: 0.00s; }
+.l2 { animation-delay: 0.55s; }
+.l3 { animation-delay: 1.10s; }
+.l4 { animation-delay: 1.65s; }
+.l5 { animation-delay: 2.20s; }
+.l6 { animation-delay: 2.75s; }
+.l7 { animation-delay: 3.30s; }
+.l8 { animation-delay: 3.85s; }
+.l9 { animation-delay: 4.40s; }
+.l10 { animation-delay: 4.95s; }
+.l11 { animation-delay: 5.50s; }
+.l12 { animation-delay: 6.05s; }
+.l13 { animation-delay: 6.60s; }
+.l14 { animation-delay: 7.15s; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="900" height="408" rx="12" fill="#0d1117"/>
+  <path d="M12 0 H888 A12 12 0 0 1 900 12 V38 H0 V12 A12 12 0 0 1 12 0 Z" fill="#161b22"/>
+  <line x1="0" y1="38" x2="900" y2="38" stroke="#30363d"/>
+
+  <circle cx="22" cy="19" r="5.5" fill="#ff5f56"/>
+  <circle cx="42" cy="19" r="5.5" fill="#ffbd2e"/>
+  <circle cx="62" cy="19" r="5.5" fill="#27c93f"/>
+  <text x="450" y="23.5" text-anchor="middle" fill="#8b949e" font-size="11.5">demo — API v1 · coffee-lab</text>
+
+  <text class="l1" x="24" y="70" style="animation: reveal 26s linear infinite 0.00s"><tspan fill="#7ee787">$ </tspan><tspan fill="#e6edf3">curl -s -X POST $API/auth/otp -H 'X-Brand: coffee-lab' -d '{&quot;phone&quot;:&quot;+79001234567&quot;}'</tspan></text>
+  <text class="l2" x="24" y="92" fill="#9aa7b4" style="animation: reveal 26s linear infinite 0.55s">{&quot;message&quot;:&quot;Код отправлен.&quot;,&quot;ttl&quot;:300,&quot;debug_code&quot;:&quot;000000&quot;}</text>
+  <text class="l3" x="24" y="114" style="animation: reveal 26s linear infinite 1.10s"><tspan fill="#7ee787">$ </tspan><tspan fill="#e6edf3">curl -s -X POST $API/auth/token -d '{&quot;phone&quot;:&quot;+79001234567&quot;,&quot;code&quot;:&quot;000000&quot;}'</tspan></text>
+  <text class="l4" x="24" y="136" fill="#9aa7b4" style="animation: reveal 26s linear infinite 1.65s">{&quot;token&quot;:&quot;1|Wx9...&quot;,&quot;token_type&quot;:&quot;Bearer&quot;,&quot;customer&quot;:{&quot;account&quot;:{&quot;balance&quot;:0}}}</text>
+  <text class="l5" x="24" y="158" style="animation: reveal 26s linear infinite 2.20s"><tspan fill="#7ee787">$ </tspan><tspan fill="#e6edf3">curl -s $API/payments -H &quot;Authorization: Bearer $T&quot; -d '{&quot;package&quot;:&quot;p1000&quot;}'</tspan></text>
+  <text class="l6" x="24" y="180" fill="#9aa7b4" style="animation: reveal 26s linear infinite 2.75s">{&quot;data&quot;:{&quot;amount&quot;:&quot;500.00&quot;,&quot;currency&quot;:&quot;RUB&quot;,&quot;status&quot;:{&quot;label&quot;:&quot;Ожидает оплаты&quot;}}}</text>
+  <text class="l7" x="24" y="202" fill="#6b7785" style="animation: reveal 26s linear infinite 3.30s"># подтверждаем платёж — в демо используется фиктивный шлюз</text>
+  <text class="l8" x="24" y="224" style="animation: reveal 26s linear infinite 3.85s"><tspan fill="#7ee787">$ </tspan><tspan fill="#e6edf3">curl -s &quot;$API/payments/1/fake-confirm&quot;</tspan></text>
+  <text class="l9" x="24" y="246" fill="#9aa7b4" style="animation: reveal 26s linear infinite 4.40s">{&quot;status&quot;:&quot;succeeded&quot;}</text>
+  <text class="l10" x="24" y="268" style="animation: reveal 26s linear infinite 4.95s"><tspan fill="#7ee787">$ </tspan><tspan fill="#e6edf3">curl -s $API/me -H &quot;Authorization: Bearer $T&quot;</tspan></text>
+  <text class="l11" x="24" y="290" fill="#9aa7b4" style="animation: reveal 26s linear infinite 5.50s">{&quot;account&quot;:{&quot;balance&quot;:1000,&quot;tier&quot;:{&quot;label&quot;:&quot;Silver&quot;},&quot;points_to_next_tier&quot;:4000}}</text>
+  <text class="l12" x="24" y="312" style="animation: reveal 26s linear infinite 6.05s"><tspan fill="#7ee787">$ </tspan><tspan fill="#e6edf3">curl -s -X POST $API/rewards/1/redeem -H &quot;Idempotency-Key: demo-1&quot;</tspan></text>
+  <text class="l13" x="24" y="334" fill="#9aa7b4" style="animation: reveal 26s linear infinite 6.60s">{&quot;data&quot;:{&quot;code&quot;:&quot;JCZOPJ1DLV&quot;,&quot;points_spent&quot;:500,&quot;status&quot;:{&quot;label&quot;:&quot;Создано&quot;}}}</text>
+  <text class="l14" x="24" y="356" fill="#7ee787" style="animation: reveal 26s linear infinite 7.15s">✓ баланс 500 · повтор с тем же ключом вернул тот же код, баллы не списаны</text>
+
+  <rect x="24" y="372" width="8" height="14" rx="1.5" fill="#7ee787" style="animation: blink 1.1s steps(1, end) infinite"/>
+</svg>
