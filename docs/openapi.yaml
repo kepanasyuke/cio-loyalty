@@ -1,0 +1,419 @@
+openapi: 3.1.0
+info:
+  title: CIO Loyalty API
+  version: 1.0.0
+  description: |
+    REST API сервиса лояльности для мобильных приложений брендов.
+
+    Все запросы мобильного клиента требуют заголовок `X-Brand` со slug'ом бренда.
+    Авторизация — Bearer-токен, выданный `POST /auth/token` (Laravel Sanctum).
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Локальный стенд
+tags:
+  - name: Auth
+  - name: Profile
+  - name: Catalog
+  - name: Payments
+  - name: Webhooks
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/otp:
+    post:
+      tags: [Auth]
+      summary: Запросить код подтверждения
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone:
+                  type: string
+                  pattern: '^\+7\d{10}$'
+                  example: '+79001234567'
+      responses:
+        '202':
+          description: Код отправлен (в local/testing — с `debug_code`)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  ttl: { type: integer, example: 300 }
+                  debug_code: { type: string, example: '000000' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+
+  /auth/token:
+    post:
+      tags: [Auth]
+      summary: Обменять код на токен
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone: { type: string, example: '+79001234567' }
+                code: { type: string, example: '000000' }
+      responses:
+        '201':
+          description: Токен выдан
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  token_type: { type: string, example: Bearer }
+                  customer:
+                    $ref: '#/components/schemas/Customer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /me:
+    get:
+      tags: [Profile]
+      summary: Профиль клиента с балансом и уровнем
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+      responses:
+        '200':
+          description: Профиль
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Customer'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /me/transactions:
+    get:
+      tags: [Profile]
+      summary: История операций с баллами
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+      responses:
+        '200':
+          description: Пагинированный список операций
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPointTransactions'
+
+  /me/redemptions:
+    get:
+      tags: [Profile]
+      summary: История обменов наград
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+      responses:
+        '200':
+          description: Пагинированный список обменов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Redemption'
+
+  /rewards:
+    get:
+      tags: [Catalog]
+      summary: Активный каталог наград бренда
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+      responses:
+        '200':
+          description: Список наград (кешируется на 120 секунд)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Reward'
+
+  /rewards/{reward}/redeem:
+    post:
+      tags: [Catalog]
+      summary: Обменять баллы на награду
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+        - name: reward
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: Ключ идемпотентности; повторный запрос с тем же ключом не списывает баллы дважды
+          schema: { type: string, maxLength: 128 }
+      responses:
+        '201':
+          description: Награда оформлена
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Redemption'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Награда закончилась
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Недостаточно баллов
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                message: Недостаточно баллов для операции.
+                code: InsufficientPointsException
+                context: { balance: 250, required: 500, missing: 250 }
+
+  /payments:
+    post:
+      tags: [Payments]
+      summary: Создать платёж на покупку пакета баллов
+      parameters:
+        - $ref: '#/components/parameters/BrandHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [package]
+              properties:
+                package:
+                  type: string
+                  enum: [p1000, p5000]
+      responses:
+        '201':
+          description: Платёж создан, вернулась ссылка на оплату
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Payment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /webhooks/payments/yookassa:
+    post:
+      tags: [Webhooks]
+      summary: Уведомление платёжного провайдера
+      security: []
+      description: |
+        Принимается только с адресов провайдера (`YOOKASSA_WEBHOOK_IPS`).
+        Повторная доставка события не начисляет баллы повторно.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                event:
+                  type: string
+                  enum: [payment.succeeded, payment.canceled]
+                object:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    status: { type: string }
+      responses:
+        '200':
+          description: Событие обработано
+        '202':
+          description: Неизвестный платёж — событие проигнорировано
+        '403':
+          description: Источник не в списке разрешённых
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    BrandHeader:
+      name: X-Brand
+      in: header
+      required: true
+      description: Slug бренда
+      schema: { type: string, example: coffee-lab }
+
+  responses:
+    Unauthorized:
+      description: Требуется авторизация
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Объект не найден или недоступен бренду
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadRequest:
+      description: Не указан бренд
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ValidationError:
+      description: Ошибка валидации
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message: { type: string }
+              errors:
+                type: object
+                additionalProperties:
+                  type: array
+                  items: { type: string }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+        code: { type: string, example: DomainException }
+        context:
+          type: object
+          additionalProperties: true
+
+    Customer:
+      type: object
+      properties:
+        id: { type: integer }
+        phone: { type: string }
+        name: { type: string, nullable: true }
+        email: { type: string, nullable: true }
+        is_blocked: { type: boolean }
+        account:
+          $ref: '#/components/schemas/LoyaltyAccount'
+
+    LoyaltyAccount:
+      type: object
+      properties:
+        balance: { type: integer, example: 1400 }
+        lifetime_points: { type: integer, example: 6500 }
+        tier:
+          type: object
+          properties:
+            code: { type: string, enum: [bronze, silver, gold, platinum] }
+            label: { type: string }
+            multiplier: { type: number, format: float, example: 1.25 }
+        next_tier_at: { type: integer, nullable: true, example: 20000 }
+        points_to_next_tier: { type: integer, example: 13500 }
+
+    Reward:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        cost_points: { type: integer }
+        stock: { type: integer, nullable: true, description: 'null — не ограничен' }
+        is_active: { type: boolean }
+        image_url: { type: string, nullable: true }
+
+    Redemption:
+      type: object
+      properties:
+        id: { type: integer }
+        code: { type: string, example: 'K7F2QW9ZAB' }
+        status:
+          type: object
+          properties:
+            code: { type: string, enum: [created, fulfilled, canceled] }
+            label: { type: string }
+        points_spent: { type: integer }
+        reward:
+          $ref: '#/components/schemas/Reward'
+        created_at: { type: string, format: date-time }
+        fulfilled_at: { type: string, format: date-time, nullable: true }
+
+    PointTransaction:
+      type: object
+      properties:
+        id: { type: integer }
+        type:
+          type: object
+          properties:
+            code: { type: string, enum: [accrual, redemption, expiry, adjustment] }
+            label: { type: string }
+        points: { type: integer, description: 'Отрицательное значение — списание' }
+        balance_after: { type: integer }
+        reason: { type: string }
+        created_at: { type: string, format: date-time }
+
+    PaginatedPointTransactions:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PointTransaction'
+        links:
+          type: object
+          additionalProperties: { type: string }
+        meta:
+          type: object
+          additionalProperties: true
+
+    Payment:
+      type: object
+      properties:
+        id: { type: integer }
+        amount: { type: string, example: '500.00' }
+        currency: { type: string, example: RUB }
+        status:
+          type: object
+          properties:
+            code: { type: string, enum: [pending, succeeded, canceled] }
+            label: { type: string }
+        confirmation_url: { type: string, nullable: true }
+        package: { type: string, example: p1000 }
+        points: { type: integer, example: 1000 }
+        paid_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
