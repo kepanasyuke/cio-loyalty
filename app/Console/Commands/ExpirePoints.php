@@ -27,130 +27,159 @@ final class ExpirePoints extends Command
 
     private int $expiredPoints = 0;
 
+    private Carbon $now;
+
+    private int $days = 0;
+
+    private string $today = '';
+
+    private bool $dryRun = false;
+
     public function handle(PointLedger $ledger): int
     {
-        $days = $this->resolveDays();
-        $dryRun = (bool) $this->option('dry-run');
-
-        // Явный UTC: created_at хранится в UTC, а now() без таймзоны
-        // сериализуется в APP_TIMEZONE — при коротких TTL это даёт сдвиг.
-        $now = Carbon::now('UTC');
-        $threshold = $now->copy()->subDays($days);
-        $today = $now->toDateString();
-
-        $this->expireStaleAccounts($ledger, $threshold, $days, $today, $dryRun);
-        $this->info($this->summary($dryRun));
+        $this->setup();
+        $this->runExpiry($ledger);
 
         return self::SUCCESS;
     }
 
+    private function setup(): void
+    {
+        $this->setupTime();
+        $this->setupOptions();
+    }
+
+    private function setupTime(): void
+    {
+        $this->now = Carbon::now('UTC');
+        $this->today = $this->now->toDateString();
+    }
+
+    private function setupOptions(): void
+    {
+        $this->days = $this->resolveDays();
+        $this->dryRun = (bool) $this->option('dry-run');
+    }
+
     private function resolveDays(): int
     {
-        // ?? ловит только null; --days=0 и --days= проходят как '0' и '',
-        // превращая threshold в "сейчас" и снося все балансы.
-        // Поэтому валидируем явно, а не полагаемся на дефолт.
-        $days = (int) ($this->option('days') ?? config('loyalty.points.ttl_days', 365));
-
-        if ($days < 1) {
-            throw new InvalidArgumentException("TTL должен быть >= 1 дня, получено: {$days}");
-        }
-
-        return $days;
+        return $this->validateDays((int) ($this->option('days') ?? config('loyalty.points.ttl_days', 365)));
     }
 
-    private function expireStaleAccounts(
-        PointLedger $ledger,
-        Carbon $threshold,
-        int $days,
-        string $today,
-        bool $dryRun,
-    ): void {
-        // cursor() + take() даёт корректный --limit и итерирует по одной
-        // модели (в отличие от lazyById, где take() перезаписывается чанком).
-        foreach ($this->staleAccounts($threshold, $this->limit())->cursor() as $account) {
-            $this->expireAccount($ledger, $account, $days, $today, $dryRun);
-        }
-    }
-
-    private function staleAccounts(Carbon $threshold, ?int $limit): Builder
+    private function validateDays(int $days): int
     {
-        // whereDoesntHave, а не whereNotExists: сохраняет global scopes
-        // модели PointTransaction (SoftDeletes и т.п.).
-        // whereNotExists с from() их теряет — регрессия из прошлой итерации.
+        return $days >= 1
+            ? $days
+            : throw new InvalidArgumentException("TTL должен быть >= 1 дня, получено: {$days}");
+    }
+
+    private function runExpiry(PointLedger $ledger): void
+    {
+        $this->expireStale($ledger);
+        $this->info($this->summary());
+    }
+
+    private function expireStale(PointLedger $ledger): void
+    {
+        foreach ($this->staleQuery()->cursor() as $account) {
+            $this->expireAccount($ledger, $account);
+        }
+    }
+
+    private function staleQuery(): Builder
+    {
         return LoyaltyAccount::query()
             ->where('balance', '>', 0)
             ->whereDoesntHave(
                 'transactions',
-                fn ($query) => $query->where('created_at', '>=', $threshold),
+                fn ($query) => $query->where('created_at', '>=', $this->threshold()),
             )
-            ->when($limit !== null, fn ($query) => $query->take($limit));
+            ->when($this->limit() !== null, fn ($query) => $query->take($this->limit()));
     }
 
-    private function expireAccount(
-        PointLedger $ledger,
-        LoyaltyAccount $account,
-        int $days,
-        string $today,
-        bool $dryRun,
-    ): void {
-        if ($dryRun) {
-            $this->previewAccount($account);
-        } else {
-            $this->debitAccount($ledger, $account, $days, $today);
-        }
-    }
-
-    private function previewAccount(LoyaltyAccount $account): void
+    private function threshold(): Carbon
     {
-        $this->line("Счёт #{$account->getKey()}: сгорит {$account->balance} баллов");
-
-        $this->expiredCount++;
-        $this->expiredPoints += $account->balance;
-    }
-
-    private function debitAccount(
-        PointLedger $ledger,
-        LoyaltyAccount $account,
-        int $days,
-        string $today,
-    ): void {
-        try {
-            // ВАЖНО: debit() должен внутри делать lockForUpdate() + проверку
-            // balance >= points + уникальный индекс на idempotency_key.
-            // Иначе — гонка со снапшотом $account->balance и двойное списание
-            // при параллельных запусках.
-            $ledger->debit(
-                account: $account,
-                points: $account->balance,
-                reason: "Сгорание баллов (не использованы {$days} дн.)",
-                idempotencyKey: "expire:{$account->getKey()}:{$today}",
-                type: PointTransactionType::Expiry,
-            );
-
-            $this->expiredCount++;
-            $this->expiredPoints += $account->balance;
-        } catch (Throwable $e) {
-            // Один сбой не должен ронять весь прогон — остальные счета важнее.
-            // Идемпотентность защитит от повторной обработки при перезапуске.
-            Log::error('ExpirePoints: не удалось списать', [
-                'account_id' => $account->getKey(),
-                'balance' => $account->balance,
-                'error' => $e->getMessage(),
-            ]);
-        }
+        return $this->now->copy()->subDays($this->days);
     }
 
     private function limit(): ?int
     {
-        $limit = (int) $this->option('limit');
-
-        return $limit > 0 ? $limit : null;
+        return $this->parseLimit((int) $this->option('limit'));
     }
 
-    private function summary(bool $dryRun): string
+    private function parseLimit(int $value): ?int
     {
-        return $dryRun
-            ? "Режим проверки: затронуто {$this->expiredCount} счетов, сгорит {$this->expiredPoints} баллов."
-            : "Списано счетов: {$this->expiredCount}, баллов: {$this->expiredPoints}.";
+        return $value > 0 ? $value : null;
+    }
+
+    private function expireAccount(PointLedger $ledger, LoyaltyAccount $account): void
+    {
+        if ($this->dryRun) {
+            $this->preview($account);
+        } else {
+            $this->debit($ledger, $account);
+        }
+    }
+
+    private function preview(LoyaltyAccount $account): void
+    {
+        $this->line("Счёт #{$account->getKey()}: сгорит {$account->balance} баллов");
+        $this->trackExpiry($account);
+    }
+
+    private function debit(PointLedger $ledger, LoyaltyAccount $account): void
+    {
+        try {
+            $this->tryDebit($ledger, $account);
+        } catch (Throwable $error) {
+            $this->logFailure($account, $error);
+        }
+    }
+
+    private function tryDebit(PointLedger $ledger, LoyaltyAccount $account): void
+    {
+        $this->performDebit($ledger, $account);
+        $this->trackExpiry($account);
+    }
+
+    private function performDebit(PointLedger $ledger, LoyaltyAccount $account): void
+    {
+        $ledger->debit(
+            account: $account,
+            points: $account->balance,
+            reason: "Сгорание баллов (не использованы {$this->days} дн.)",
+            idempotencyKey: "expire:{$account->getKey()}:{$this->today}",
+            type: PointTransactionType::Expiry,
+        );
+    }
+
+    private function trackExpiry(LoyaltyAccount $account): void
+    {
+        $this->expiredCount++;
+        $this->expiredPoints += $account->balance;
+    }
+
+    private function logFailure(LoyaltyAccount $account, Throwable $error): void
+    {
+        Log::error('ExpirePoints: не удалось списать', [
+            'account_id' => $account->getKey(),
+            'balance' => $account->balance,
+            'error' => $error->getMessage(),
+        ]);
+    }
+
+    private function summary(): string
+    {
+        return $this->dryRun ? $this->dryRunSummary() : $this->debitSummary();
+    }
+
+    private function dryRunSummary(): string
+    {
+        return "Режим проверки: затронуто {$this->expiredCount} счетов, сгорит {$this->expiredPoints} баллов.";
+    }
+
+    private function debitSummary(): string
+    {
+        return "Списано счетов: {$this->expiredCount}, баллов: {$this->expiredPoints}.";
     }
 }
