@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace App\Services\Payments;
 
 use App\Enums\PaymentStatus;
+use App\Enums\Tier;
 use App\Exceptions\DomainException;
-use App\Models\Customer;
 use App\Models\Payment;
 use App\Services\Loyalty\PointLedger;
 use Illuminate\Support\Facades\DB;
@@ -16,19 +16,16 @@ final class PaymentService
     public function __construct(
         private readonly PaymentGateway $gateway,
         private readonly PointLedger $ledger,
-    ) {}
+    ) {
+    }
 
-    public function start(Customer $customer, string $packageCode): Payment
+    /**
+     * @param array<string, mixed> $package
+     */
+    public function create(int $customerId, string $packageCode, array $package): Payment
     {
-        /** @var array{points: int, amount: string, currency: string}|null $package */
-        $package = config("loyalty.packages.{$packageCode}");
-
-        if (! is_array($package)) {
-            throw new DomainException('Пакет баллов не найден.', 404);
-        }
-
         $payment = Payment::query()->create([
-            'customer_id' => $customer->getKey(),
+            'customer_id' => $customerId,
             'gateway' => $this->gateway->name(),
             'amount' => $package['amount'],
             'currency' => $package['currency'],
@@ -52,7 +49,7 @@ final class PaymentService
     }
 
     /**
-     * @param  array<string, mixed>  $payload
+     * @param array<string, mixed> $payload
      */
     public function confirm(Payment $payment, array $payload = []): bool
     {
@@ -67,13 +64,16 @@ final class PaymentService
                 return false;
             }
 
-            $points = (int) ($locked->payload['points'] ?? 0);
+            $basePoints = (int) ($locked->payload['points'] ?? 0);
 
-            if ($points > 0) {
+            if ($basePoints > 0) {
+                $account = $locked->customer->account()->firstOrFail();
+                $earned = $account->tier->applyTo($basePoints);
+
                 $this->ledger->credit(
-                    account: $locked->customer->account()->firstOrFail(),
-                    points: $points,
-                    reason: 'Покупка пакета баллов',
+                    account: $account,
+                    points: $earned,
+                    reason: $this->accrualReason($account->tier, $basePoints, $earned),
                     source: $locked,
                     idempotencyKey: 'payment:'.$locked->getKey(),
                 );
@@ -84,10 +84,17 @@ final class PaymentService
     }
 
     /**
-     * @param  array<string, mixed>  $payload
+     * @param array<string, mixed> $payload
      */
     public function cancel(Payment $payment, array $payload = []): bool
     {
         return $payment->markCanceled($payload);
+    }
+
+    private function accrualReason(Tier $tier, int $base, int $earned): string
+    {
+        return $earned === $base
+            ? 'Покупка пакета баллов'
+            : sprintf('Покупка пакета баллов (%s ×%s)', $tier->label(), $tier->multiplier());
     }
 }
