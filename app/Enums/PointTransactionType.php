@@ -20,9 +20,4 @@ enum PointTransactionType: string
             self::Adjustment => 'Ручная корректировка',
         };
     }
-
-    public function isCredit(): bool
-    {
-        return $this === self::Accrual;
-    }
 }
