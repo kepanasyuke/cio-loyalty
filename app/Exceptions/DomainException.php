@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Exceptions;
 
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use RuntimeException;
 
 class DomainException extends RuntimeException
@@ -33,7 +35,19 @@ class DomainException extends RuntimeException
         return $this->context;
     }
 
-    public function render(): JsonResponse
+    public function render(Request $request): JsonResponse|Response
+    {
+        return $this->isApiRequest($request)
+            ? $this->toJsonResponse()
+            : $this->toHtmlResponse();
+    }
+
+    private function isApiRequest(Request $request): bool
+    {
+        return $request->expectsJson() || $request->is('api/*');
+    }
+
+    private function toJsonResponse(): JsonResponse
     {
         $payload = [
             'message' => $this->getMessage(),
@@ -45,5 +59,14 @@ class DomainException extends RuntimeException
         }
 
         return response()->json($payload, $this->status);
+    }
+
+    private function toHtmlResponse(): Response
+    {
+        $view = 'errors.'.$this->status;
+
+        return view()->exists($view)
+            ? response()->view($view, ['exception' => $this], $this->status)
+            : response($this->getMessage(), $this->status);
     }
 }
