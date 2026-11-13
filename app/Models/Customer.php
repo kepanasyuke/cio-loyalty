@@ -14,8 +14,36 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\HasApiTokens;
 
+/**
+ * Клиент программы лояльности, привязанный к одному Brand.
+ *
+ * Аутентификация — Sanctum Bearer-токен, выданный после OTP-подтверждения
+ * (см. AuthController::issueToken). Пароль не используется.
+ *
+ * Инвариант account:
+ * - При создании клиента booted() автоматически создаёт LoyaltyAccount
+ *   (balance=0, lifetime_points=0, tier=Bronze). Все потребители
+ *   (ProfileController, PointLedger, RedemptionService) рассчитывают,
+ *   что счёт существует с момента регистрации.
+ * - Создание счёта обёрнуто в DB::transaction — если firstOrCreate
+ *   падает, транзакция откатывается. Если вызывающий код создаёт
+ *   Customer вне транзакции и firstOrCreate упал — клиент остаётся
+ *   без счёта. Защита от orphan — scheduled cleanup (см. docs).
+ *
+ * SoftDeletes:
+ * - Удаление клиента — soft (deleted_at), история платежей и
+ *   транзакций сохраняется. Токены Sanctum удаляются в deleted event —
+ *   soft-deleted клиент не аутентифицируется (auth:sanctum не находит
+ *   его через Customer::find()).
+ *
+ * Мультитенантность:
+ * - brand_id обязателен, UNIQUE (brand_id, phone) гарантирует
+ *   идемпотентность firstOrCreate в AuthController.
+ * - scopeForBrand() — фильтр по бренду для админ-запросов и дашбордов.
+ */
 class Customer extends Authenticatable
 {
     /** @use HasFactory<CustomerFactory> */
@@ -30,10 +58,10 @@ class Customer extends Authenticatable
         'phone',
         'name',
         'email',
-        'is_blocked',
     ];
 
     protected $hidden = [
+        'password',
         'remember_token',
     ];
 
@@ -47,11 +75,17 @@ class Customer extends Authenticatable
     protected static function booted(): void
     {
         static::created(function (Customer $customer): void {
-            $customer->account()->firstOrCreate([], [
-                'balance' => 0,
-                'lifetime_points' => 0,
-                'tier' => Tier::Bronze,
-            ]);
+            DB::transaction(function () use ($customer): void {
+                $customer->account()->firstOrCreate([], [
+                    'balance' => 0,
+                    'lifetime_points' => 0,
+                    'tier' => Tier::Bronze,
+                ]);
+            });
+        });
+
+        static::deleted(function (Customer $customer): void {
+            $customer->tokens()->delete();
         });
     }
 
@@ -96,10 +130,16 @@ class Customer extends Authenticatable
     }
 
     /**
+     * Фильтр по бренду — для мультитенантных запросов.
+     *
      * @param  Builder<Customer>  $query
+     * @return Builder<Customer>
      */
-    public function scopeForBrand(Builder $query, Brand|int $brand): void
+    public function scopeForBrand(Builder $query, Brand|int $brand): Builder
     {
-        $query->where('brand_id', $brand instanceof Brand ? $brand->getKey() : $brand);
+        return $query->where(
+            'brand_id',
+            $brand instanceof Brand ? $brand->getKey() : $brand,
+        );
     }
 }
